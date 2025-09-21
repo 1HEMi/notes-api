@@ -1,0 +1,10 @@
+/bin/
+/*.exe
+.vscode/
+.idea/
+.env
+local.yaml
+pgdata/
+*.db
+.DS_Store
+Thumbs.db
