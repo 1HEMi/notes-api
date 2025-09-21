@@ -1,10 +1,9 @@
-package get
+package delete
 
 import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"notes/internal/models"
 	"notes/internal/storage"
 	"notes/pkg/api/response"
 	"notes/pkg/logger/sl"
@@ -15,13 +14,13 @@ import (
 	"github.com/go-chi/render"
 )
 
-type NoteGetter interface {
-	GetNote(userID, noteID int) (*models.Note, error)
+type NoteDeleter interface {
+	DeleteNote(noteID, userID int) error
 }
 
-func New(log *slog.Logger, noteGetter NoteGetter) http.HandlerFunc {
+func New(log *slog.Logger, noteDeleter NoteDeleter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		const op = "handlers.note.get.New"
+		const op = "handlers.note.delete.New"
 
 		log = log.With(
 			slog.String("op", op),
@@ -29,45 +28,42 @@ func New(log *slog.Logger, noteGetter NoteGetter) http.HandlerFunc {
 		)
 
 		strUserID := chi.URLParam(r, "id")
-		strNoteID := chi.URLParam(r, "note_id")
-
 		userID, err := strconv.Atoi(strUserID)
 		if err != nil {
 			log.Error("invalid user id", sl.Err(err))
 			render.JSON(w, r, response.Error("invalid user id"))
 			return
 		}
+
+		strNoteID := chi.URLParam(r, "note_id")
 		noteID, err := strconv.Atoi(strNoteID)
 		if err != nil {
 			log.Error("invalid note id", sl.Err(err))
 			render.JSON(w, r, response.Error("invalid note id"))
 			return
 		}
-		note, err := noteGetter.GetNote(userID, noteID)
+		err = noteDeleter.DeleteNote(noteID, userID)
 		if errors.Is(err, storage.ErrNoteNotFound) {
 			log.Info("note not found", slog.Int("note_id", noteID))
 			render.JSON(w, r, response.Error("note not found"))
 			return
-
 		}
-		if err != nil {
-			log.Error("failed to get note", sl.Err(err))
-			render.JSON(w, r, response.Error("failed to get note"))
-			return
-		}
-
-		if note.UserID != userID {
-			log.Warn("forbidden access to note",
+		if errors.Is(err, storage.ErrForbidden) {
+			log.Warn("forbidden delete attempt",
 				slog.Int("note_id", noteID),
-				slog.Int("owner_id", note.UserID),
-				slog.Int("requested_user_id", userID),
+				slog.Int("user_id", userID),
 			)
 			render.Status(r, http.StatusForbidden)
 			render.JSON(w, r, response.Error("forbidden access"))
 			return
 		}
-		log.Info("note was delivered successfully", slog.Int("note_id", noteID))
-		render.JSON(w, r, note)
+		if err != nil {
+			log.Error("failed to delete note", sl.Err(err))
+			render.JSON(w, r, response.Error("failed to delete note"))
+			return
+		}
 
+		log.Info("note successfully deleted", slog.Int("note_id", noteID))
+		render.JSON(w, r, response.OK())
 	}
 }

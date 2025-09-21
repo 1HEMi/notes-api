@@ -85,9 +85,19 @@ func (s *Storage) GetNote(userID, noteID int) (*models.Note, error) {
 	return &resNote, nil
 }
 
-func (s *Storage) GetAllNotes(userID int) ([]models.Note, error) {
+func (s *Storage) GetAllNotes(userID, limit, offset int, sort string) ([]models.Note, error) {
 	const op = "storage.postgres.GetAllNotes"
-	rows, err := s.db.Query("SELECT id, user_id, title, content, created_at, updated_at FROM notes WHERE user_id=$1 ORDER BY created_at DESC", userID)
+	if sort != "asc" && sort != "desc" {
+		sort = "desc"
+	}
+	query := `
+		SELECT id, user_id, title, content, created_at, updated_at
+		FROM notes
+		WHERE user_id = $1
+		ORDER BY created_at ` + sort + `
+		LIMIT $2 OFFSET $3
+	`
+	rows, err := s.db.Query(query, userID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
@@ -99,41 +109,54 @@ func (s *Storage) GetAllNotes(userID int) ([]models.Note, error) {
 			return nil, fmt.Errorf("%s: scan: %w", op, err)
 		}
 		notes = append(notes, n)
-
+	}
+	if len(notes) == 0 {
+		return nil, storage.ErrNoteNotFound
 	}
 	return notes, nil
 }
 
 func (s *Storage) UpdateNote(noteID int, userID int, title, content string) error {
 	const op = "storage.postgres.UpdateNote"
-	stmt, err := s.db.Prepare("UPDATE notes SET title=$1, content=$2, updated_at=NOW() WHERE id=$3 AND user_id=$4")
+	var ownerID int
+	err := s.db.QueryRow("SELECT user_id FROM notes WHERE id=$1", noteID).Scan(&ownerID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return storage.ErrNoteNotFound
+		}
+		return fmt.Errorf("%s: query row: %w", op, err)
+	}
+	if ownerID != userID {
+		return storage.ErrForbidden
+	}
+	stmt, err := s.db.Prepare("UPDATE notes SET title=$1, content=$2, updated_at=NOW() WHERE id=$3")
 	if err != nil {
 		return fmt.Errorf("%s: prepare statement: %w", op, err)
 	}
-	res, err := stmt.Exec(title, content, noteID, userID)
+	res, err := stmt.Exec(title, content, noteID)
 	if err != nil {
 		return fmt.Errorf("%s: exec: %w", op, err)
 	}
-	rowsAffected, _ := res.RowsAffected()
-	if rowsAffected == 0 {
-		return storage.ErrNoteNotFound
-	}
+	_ = res
 	return nil
 }
 
 func (s *Storage) DeleteNote(noteID, userID int) error {
 	const op = "storage.postgres.DeleteNote"
-	stmt, err := s.db.Prepare("DELETE FROM notes WHERE id=$1 AND user_id=$2")
+	var ownerID int
+	err := s.db.QueryRow("SELECT user_id FROM notes WHERE id=$1", noteID).Scan(&ownerID)
 	if err != nil {
-		return fmt.Errorf("%s: prepare statement: %w", op, err)
+		if err == sql.ErrNoRows {
+			return storage.ErrNoteNotFound
+		}
+		return fmt.Errorf("%s: query row: %w", op, err)
 	}
-	res, err := stmt.Exec(noteID, userID)
+	if ownerID != userID {
+		return storage.ErrForbidden
+	}
+	_, err = s.db.Exec("DELETE FROM notes WHERE id=$1", noteID)
 	if err != nil {
-		return fmt.Errorf("%s: exec: %w", op, err)
-	}
-	rowsAffected, _ := res.RowsAffected()
-	if rowsAffected == 0 {
-		return storage.ErrNoteNotFound
+		return fmt.Errorf("%s: delete exec: %w", op, err)
 	}
 	return nil
 }

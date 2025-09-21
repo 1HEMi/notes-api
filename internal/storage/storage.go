@@ -7,4 +7,5 @@ var (
 	ErrTitleExists  = errors.New("title already exists")
 	ErrUerNotFound  = errors.New("user not found")
 	ErrUserExists   = errors.New("user already exists")
+	ErrForbidden    = errors.New("forbidden access")
 )
