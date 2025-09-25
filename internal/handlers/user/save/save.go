@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"notes/internal/storage"
 	"notes/pkg/api/response"
+	"notes/pkg/auth"
 	"notes/pkg/logger/sl"
 
 	"github.com/go-chi/chi/middleware"
@@ -15,10 +16,11 @@ import (
 
 type Request struct {
 	Username string `json:"username" validate:"required"`
+	Password string `json:"password" validate:"required,min=6"`
 }
 
 type UserSaver interface {
-	SaveUser(username string) error
+	SaveUser(username, password string) (int, error)
 }
 
 func New(log *slog.Logger, userSaver UserSaver) http.HandlerFunc {
@@ -43,7 +45,7 @@ func New(log *slog.Logger, userSaver UserSaver) http.HandlerFunc {
 			return
 		}
 
-		err = userSaver.SaveUser(req.Username)
+		userID, err := userSaver.SaveUser(req.Username, req.Password)
 		if errors.Is(err, storage.ErrUserExists) {
 			log.Info("username already exists", slog.String("username", req.Username))
 			render.JSON(w, r, response.Error("username already exists"))
@@ -54,8 +56,14 @@ func New(log *slog.Logger, userSaver UserSaver) http.HandlerFunc {
 			render.JSON(w, r, response.Error("failed to create user"))
 			return
 		}
+		token, err := auth.GenerateToken(userID, req.Username)
+		if err != nil {
+			log.Error("failed to generate JWT", sl.Err(err))
+			render.JSON(w, r, response.Error("failed to generate token"))
+			return
+		}
 		log.Info("user successfully created", slog.String("username", req.Username))
 		render.Status(r, http.StatusCreated)
-		render.JSON(w, r, response.OK())
+		render.JSON(w, r, map[string]string{"token": token})
 	}
 }

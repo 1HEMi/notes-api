@@ -8,6 +8,7 @@ import (
 	"notes/internal/storage"
 
 	"github.com/lib/pq"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type Storage struct {
@@ -29,21 +30,44 @@ func New(StoragePath string) (*Storage, error) {
 	}, nil
 }
 
-func (s *Storage) SaveUser(username string) error {
+func (s *Storage) SaveUser(username, password string) (int, error) {
 	const op = "storage.postgres.SaveUser"
-	stmt, err := s.db.Prepare("INSERT INTO users(username) VALUES($1)")
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
+		return 0, fmt.Errorf("%s: hash password: %w", op, err)
 	}
-	res, err := stmt.Exec(username)
+	var userID int
+	err = s.db.QueryRow(
+		"INSERT INTO users(username, password) VALUES($1, $2) RETURNING id",
+		username, hashedPassword,
+	).Scan(&userID)
 	if err != nil {
 		if pgErr, ok := err.(*pq.Error); ok && pgErr.Code == "23505" {
-			return storage.ErrUserExists
+			return 0, storage.ErrUserExists
 		}
-		return fmt.Errorf("%s: %w", op, err)
+		return 0, fmt.Errorf("%s: insert user: %w", op, err)
 	}
-	_ = res
-	return nil
+
+	return userID, nil
+}
+
+func (s *Storage) GetUserByUsername(username string) (*models.User, error) {
+	const op = "storage.postgres.GetUserByUsername"
+
+	stmt, err := s.db.Prepare("SELECT id, username, password, created_at FROM users WHERE username=$1")
+	if err != nil {
+		return nil, fmt.Errorf("%s: prepare statement: %w", op, err)
+	}
+	defer stmt.Close()
+	var u models.User
+	err = stmt.QueryRow(username).Scan(&u.ID, &u.Username, &u.Password, &u.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, storage.ErrUserNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%s: query row: %w", op, err)
+	}
+	return &u, nil
 }
 
 func (s *Storage) SaveNote(userID int, title, content string) error {

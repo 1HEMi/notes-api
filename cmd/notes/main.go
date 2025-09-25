@@ -9,6 +9,7 @@ import (
 	"notes/internal/handlers/note/getall"
 	noteSave "notes/internal/handlers/note/save"
 	"notes/internal/handlers/note/update"
+	"notes/internal/handlers/user/login"
 	userSave "notes/internal/handlers/user/save"
 	"notes/internal/storage/postgres"
 	"notes/pkg/logger/handlers/slogpretty"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/go-chi/chi"
 	"github.com/go-chi/chi/middleware"
+	JWTMiddleware "notes/internal/middleware"
 )
 
 const (
@@ -42,12 +44,17 @@ func main() {
 	router.Use(middleware.Logger)
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.URLFormat)
-	router.Post("/users", userSave.New(log, storage))
-	router.Post("/users/{id}/notes", noteSave.New(log, storage))
-	router.Get("/users/{id}/notes/{note_id}", get.New(log, storage))
-	router.Get("/users/{id}/notes", getall.New(log, storage))
-	router.Put("/users/{id}/notes/{note_id}", update.New(log, storage))
-	router.Delete("/users/{id}/notes/{note_id}", delete.New(log, storage))
+	router.Post("/users/register", userSave.New(log, storage))
+	router.Post("/users/login", login.New(log, storage))
+
+	router.Route("/users/{id}/notes", func(r chi.Router) {
+		r.Use(JWTMiddleware.JWT)
+		r.Post("/", noteSave.New(log, storage))
+		r.Get("/", getall.New(log, storage))
+		r.Get("/{note_id}", get.New(log, storage))
+		r.Put("/{note_id}", update.New(log, storage))
+		r.Delete("/{note_id}", delete.New(log, storage))
+	})
 
 	log.Info("starting server", slog.String("address", cfg.Address))
 	srv := &http.Server{

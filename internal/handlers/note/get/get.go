@@ -2,23 +2,30 @@ package get
 
 import (
 	"errors"
+	"github.com/go-chi/chi"
+	"github.com/go-chi/chi/middleware"
+	"github.com/go-chi/render"
 	"log/slog"
 	"net/http"
+	JWTMiddleware "notes/internal/middleware"
 	"notes/internal/models"
 	"notes/internal/storage"
 	"notes/pkg/api/response"
 	"notes/pkg/logger/sl"
 	"strconv"
-
-	"github.com/go-chi/chi"
-	"github.com/go-chi/chi/middleware"
-	"github.com/go-chi/render"
 )
 
 type NoteGetter interface {
 	GetNote(userID, noteID int) (*models.Note, error)
 }
 
+func GetUserID(r *http.Request) (int, bool) {
+	uid := JWTMiddleware.GetUserID(r.Context())
+	if uid == 0 {
+		return 0, false
+	}
+	return uid, true
+}
 func New(log *slog.Logger, noteGetter NoteGetter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		const op = "handlers.note.get.New"
@@ -27,23 +34,34 @@ func New(log *slog.Logger, noteGetter NoteGetter) http.HandlerFunc {
 			slog.String("op", op),
 			slog.String("request_id", middleware.GetReqID(r.Context())),
 		)
-
+		userIDFromToken, ok := GetUserID(r)
+		if !ok {
+			log.Error("unauthorized: no user_id in context")
+			render.Status(r, http.StatusUnauthorized)
+			render.JSON(w, r, response.Error("unauthorized"))
+			return
+		}
 		strUserID := chi.URLParam(r, "id")
-		strNoteID := chi.URLParam(r, "note_id")
-
-		userID, err := strconv.Atoi(strUserID)
+		userIDFromURL, err := strconv.Atoi(strUserID)
 		if err != nil {
 			log.Error("invalid user id", sl.Err(err))
 			render.JSON(w, r, response.Error("invalid user id"))
 			return
 		}
+		if userIDFromToken != userIDFromURL {
+			log.Warn("user id mismatch", slog.Int("token_id", userIDFromToken), slog.Int("url_id", userIDFromURL))
+			render.Status(r, http.StatusForbidden)
+			render.JSON(w, r, response.Error("forbidden access"))
+			return
+		}
+		strNoteID := chi.URLParam(r, "note_id")
 		noteID, err := strconv.Atoi(strNoteID)
 		if err != nil {
 			log.Error("invalid note id", sl.Err(err))
 			render.JSON(w, r, response.Error("invalid note id"))
 			return
 		}
-		note, err := noteGetter.GetNote(userID, noteID)
+		note, err := noteGetter.GetNote(userIDFromToken, noteID)
 		if errors.Is(err, storage.ErrNoteNotFound) {
 			log.Info("note not found", slog.Int("note_id", noteID))
 			render.JSON(w, r, response.Error("note not found"))
@@ -53,17 +71,6 @@ func New(log *slog.Logger, noteGetter NoteGetter) http.HandlerFunc {
 		if err != nil {
 			log.Error("failed to get note", sl.Err(err))
 			render.JSON(w, r, response.Error("failed to get note"))
-			return
-		}
-
-		if note.UserID != userID {
-			log.Warn("forbidden access to note",
-				slog.Int("note_id", noteID),
-				slog.Int("owner_id", note.UserID),
-				slog.Int("requested_user_id", userID),
-			)
-			render.Status(r, http.StatusForbidden)
-			render.JSON(w, r, response.Error("forbidden access"))
 			return
 		}
 		log.Info("note was delivered successfully", slog.Int("note_id", noteID))

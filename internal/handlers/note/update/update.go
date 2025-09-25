@@ -2,17 +2,17 @@ package update
 
 import (
 	"errors"
-	"log/slog"
-	"net/http"
-	"notes/internal/storage"
-	"notes/pkg/api/response"
-	"notes/pkg/logger/sl"
-	"strconv"
-
 	"github.com/go-chi/chi"
 	"github.com/go-chi/chi/middleware"
 	"github.com/go-chi/render"
 	"github.com/go-playground/validator/v10"
+	"log/slog"
+	"net/http"
+	JWTMiddleware "notes/internal/middleware"
+	"notes/internal/storage"
+	"notes/pkg/api/response"
+	"notes/pkg/logger/sl"
+	"strconv"
 )
 
 type Request struct {
@@ -24,6 +24,14 @@ type NoteUpdater interface {
 	UpdateNote(noteID int, userID int, title, content string) error
 }
 
+func GetUserID(r *http.Request) (int, bool) {
+	uid := JWTMiddleware.GetUserID(r.Context())
+	if uid == 0 {
+		return 0, false
+	}
+	return uid, true
+}
+
 func New(log *slog.Logger, noteUpdater NoteUpdater) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		const op = "handlers.note.update.New"
@@ -31,11 +39,24 @@ func New(log *slog.Logger, noteUpdater NoteUpdater) http.HandlerFunc {
 			slog.String("op", op),
 			slog.String("request_id", middleware.GetReqID(r.Context())),
 		)
+		userIDFromToken, ok := GetUserID(r)
+		if !ok {
+			log.Error("unauthorized: no user_id in context")
+			render.Status(r, http.StatusUnauthorized)
+			render.JSON(w, r, response.Error("unauthorized"))
+			return
+		}
 		strUserID := chi.URLParam(r, "id")
-		userID, err := strconv.Atoi(strUserID)
+		userIDFromURL, err := strconv.Atoi(strUserID)
 		if err != nil {
 			log.Error("invalid user id", sl.Err(err))
 			render.JSON(w, r, response.Error("invalid user id"))
+			return
+		}
+		if userIDFromToken != userIDFromURL {
+			log.Warn("user id mismatch", slog.Int("token_id", userIDFromToken), slog.Int("url_id", userIDFromURL))
+			render.Status(r, http.StatusForbidden)
+			render.JSON(w, r, response.Error("forbidden access"))
 			return
 		}
 		strNoteID := chi.URLParam(r, "note_id")
@@ -58,7 +79,7 @@ func New(log *slog.Logger, noteUpdater NoteUpdater) http.HandlerFunc {
 			render.JSON(w, r, response.ValidationError(validateErr))
 			return
 		}
-		err = noteUpdater.UpdateNote(noteID, userID, req.Title, req.Content)
+		err = noteUpdater.UpdateNote(noteID, userIDFromToken, req.Title, req.Content)
 		if errors.Is(err, storage.ErrNoteNotFound) {
 			log.Info("note not found", slog.Int("note_id", noteID))
 			render.JSON(w, r, response.Error("note not found"))
@@ -67,7 +88,7 @@ func New(log *slog.Logger, noteUpdater NoteUpdater) http.HandlerFunc {
 		if errors.Is(err, storage.ErrForbidden) {
 			log.Warn("forbidden update attempt",
 				slog.Int("note_id", noteID),
-				slog.Int("user_id", userID),
+				slog.Int("user_id", userIDFromToken),
 			)
 			render.Status(r, http.StatusForbidden)
 			render.JSON(w, r, response.Error("forbidden access"))
